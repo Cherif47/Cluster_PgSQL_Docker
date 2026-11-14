@@ -1,0 +1,3 @@
+#!/bin/bash
+# Sain si HAProxy répond sur son port de stats
+exec 3<>/dev/tcp/127.0.0.1/{{ haproxy_stats_port }}

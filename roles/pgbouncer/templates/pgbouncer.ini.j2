@@ -1,0 +1,25 @@
+; Géré par Ansible - {{ inventory_hostname }}
+[databases]
+; Toutes les bases -> leader PostgreSQL, via la VIP HAProxy (écritures)
+* = host={{ keepalived_vip }} port={{ haproxy_pg_rw_port }}
+
+[pgbouncer]
+listen_addr = *
+listen_port = {{ pgbouncer_port }}
+unix_socket_dir =
+
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+admin_users = {{ pg_console_user }}
+
+pool_mode = {{ pgbouncer_pool_mode }}
+max_client_conn = {{ pgbouncer_max_client_conn }}
+default_pool_size = {{ pgbouncer_default_pool_size }}
+reserve_pool_size = 5
+server_lifetime = 3600
+server_idle_timeout = 600
+server_check_delay = 30
+ignore_startup_parameters = extra_float_digits,options
+
+log_connections = 0
+log_disconnections = 0

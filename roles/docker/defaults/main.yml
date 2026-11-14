@@ -1,0 +1,3 @@
+---
+# Version de Docker CE installée sur tous les nœuds (identique à upgrade-docker.yml).
+docker_target_version: "29.9.3"

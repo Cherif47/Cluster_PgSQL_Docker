@@ -1,0 +1,61 @@
+---
+- name: Répertoires Keepalived
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /srv/docker/keepalived
+    - /srv/docker/keepalived/build
+
+- name: Dockerfile Keepalived
+  copy:
+    src: Dockerfile
+    dest: /srv/docker/keepalived/build/Dockerfile
+    mode: "0644"
+
+- name: Image Keepalived déjà construite ?
+  command: docker image inspect {{ keepalived_image }}
+  register: keepalived_image_present
+  changed_when: false
+  failed_when: false
+
+- name: Construire l'image Keepalived
+  command: >
+    docker build -t {{ keepalived_image }}
+    {% if http_proxy_url | length > 0 %}--build-arg HTTP_PROXY={{ http_proxy_url }} --build-arg http_proxy={{ http_proxy_url }}{% endif %}
+    {% if https_proxy_url | length > 0 %}--build-arg HTTPS_PROXY={{ https_proxy_url }} --build-arg https_proxy={{ https_proxy_url }}{% endif %}
+    /srv/docker/keepalived/build
+  when: keepalived_image_present.rc != 0
+
+- name: Script de sonde HAProxy
+  template:
+    src: chk_haproxy.sh.j2
+    dest: /srv/docker/keepalived/chk_haproxy.sh
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Redémarrer Keepalived
+
+- name: Configuration Keepalived
+  template:
+    src: keepalived.conf.j2
+    dest: /srv/docker/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Redémarrer Keepalived
+
+- name: Conteneur Keepalived existant ?
+  command: docker ps -a --filter name=^keepalived$ --format '{{ "{{ .Names }}" }}'
+  register: keepalived_exists
+  changed_when: false
+
+- name: Créer le conteneur Keepalived
+  command: >
+    docker run -d --name keepalived --restart unless-stopped --network host
+    --cap-add NET_ADMIN --cap-add NET_RAW --cap-add NET_BROADCAST
+    -v /srv/docker/keepalived/keepalived.conf:/etc/keepalived/keepalived.conf:ro
+    -v /srv/docker/keepalived/chk_haproxy.sh:/etc/keepalived/chk_haproxy.sh:ro
+    {{ keepalived_image }}
+  when: keepalived_exists.stdout == ""

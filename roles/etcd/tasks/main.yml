@@ -1,0 +1,31 @@
+---
+- name: Réseau overlay {{ backend_network }}
+  shell: |
+    docker network inspect {{ backend_network }} >/dev/null 2>&1 && exit 0
+    docker network create -d overlay --attachable --subnet {{ backend_subnet }} {{ backend_network }} && echo CREATED
+  run_once: true
+  register: net
+  changed_when: "'CREATED' in net.stdout"
+
+- name: Déployer stack etcd
+  copy:
+    src: "{{ playbook_dir }}/files/etcd-stack.yml"
+    dest: /root/etcd-stack.yml
+    mode: "0644"
+
+- name: Deploy etcd
+  command: docker stack deploy -c /root/etcd-stack.yml pginfra
+  run_once: true  # un seul manager déploie : sinon "update out of sequence"
+  register: etcd_deploy
+  changed_when: "'Creating' in etcd_deploy.stdout or 'Updating' in etcd_deploy.stdout"
+
+- name: Attendre que le cluster etcd soit sain
+  shell: >
+    docker exec $(docker ps -q -f name=pginfra_etcd | head -n1)
+    etcdctl --endpoints=http://etcd1:2379 endpoint health --cluster
+  run_once: true  # --cluster vérifie déjà tous les membres ; un conteneur etcd n'existe pas sur chaque nœud
+  register: etcd_health
+  until: etcd_health.rc == 0
+  retries: 40
+  delay: 5
+  changed_when: false

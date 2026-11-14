@@ -1,0 +1,113 @@
+version: "3.9"
+
+services:
+
+  patroni1:
+    image: patroni-postgres:18
+    hostname: patroni1
+
+    environment:
+      EDITOR: "vi"
+      NO_PROXY: "etcd1,etcd2,etcd3,patroni1,patroni2,patroni3,localhost,127.0.0.1"
+      no_proxy: "etcd1,etcd2,etcd3,patroni1,patroni2,patroni3,localhost,127.0.0.1"
+
+    ports:
+      - target: 5432
+        published: 5432
+        protocol: tcp
+        mode: host
+      - target: 8008
+        published: 8008
+        protocol: tcp
+        mode: host
+
+    networks:
+      - backend
+
+    volumes:
+      - /srv/docker/postgres1:/var/lib/postgresql/data
+      - /srv/docker/patroni1.yml:/etc/patroni/patroni.yml:ro
+
+    command:
+      - patroni
+      - /etc/patroni/patroni.yml
+
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == SRV-DOCK1
+
+  patroni2:
+    image: patroni-postgres:18
+    hostname: patroni2
+
+    environment:
+      EDITOR: "vi"
+      NO_PROXY: "etcd1,etcd2,etcd3,patroni1,patroni2,patroni3,localhost,127.0.0.1"
+      no_proxy: "etcd1,etcd2,etcd3,patroni1,patroni2,patroni3,localhost,127.0.0.1"
+
+    ports:
+      - target: 5432
+        published: 5432
+        protocol: tcp
+        mode: host
+      - target: 8008
+        published: 8008
+        protocol: tcp
+        mode: host
+
+    networks:
+      - backend
+
+    volumes:
+      - /srv/docker/postgres2:/var/lib/postgresql/data
+      - /srv/docker/patroni2.yml:/etc/patroni/patroni.yml:ro
+
+    command:
+      - patroni
+      - /etc/patroni/patroni.yml
+
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == SRV-DOCK2
+
+  patroni3:
+    image: patroni-postgres:18
+    hostname: patroni3
+
+    environment:
+      EDITOR: "vi"
+      NO_PROXY: "etcd1,etcd2,etcd3,patroni1,patroni2,patroni3,localhost,127.0.0.1"
+      no_proxy: "etcd1,etcd2,etcd3,patroni1,patroni2,patroni3,localhost,127.0.0.1"
+
+    ports:
+      - target: 5432
+        published: 5432
+        protocol: tcp
+        mode: host
+      - target: 8008
+        published: 8008
+        protocol: tcp
+        mode: host
+
+    networks:
+      - backend
+
+    volumes:
+      - /srv/docker/postgres3:/var/lib/postgresql/data
+      - /srv/docker/patroni3.yml:/etc/patroni/patroni.yml:ro
+
+    command:
+      - patroni
+      - /etc/patroni/patroni.yml
+
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == SRV-DOCK3
+
+
+networks:
+  backend:
+    external: true

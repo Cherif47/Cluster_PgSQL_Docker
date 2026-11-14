@@ -1,0 +1,50 @@
+---
+- name: Répertoires de base
+  file:
+    path: /srv/docker
+    state: directory
+    mode: "0755"
+
+- name: Répertoire de données etcd
+  file:
+    path: "/srv/docker/etcd{{ node_id }}"
+    state: directory
+    mode: "0755"
+
+- name: Répertoire de données PostgreSQL (uid 999 = postgres dans l'image)
+  file:
+    path: "/srv/docker/postgres{{ node_id }}"
+    state: directory
+    owner: "999"
+    group: "999"
+    mode: "0700"
+
+- name: Configuration Patroni du nœud
+  template:
+    src: patroni.yml.j2
+    dest: "/srv/docker/patroni{{ node_id }}.yml"
+    owner: "999"
+    group: "999"
+    mode: "0640"
+
+- name: Image Patroni déjà présente ?
+  command: docker image inspect {{ patroni_image }}
+  register: image_present
+  changed_when: false
+  failed_when: false
+
+- name: Copier le tar de l'image
+  copy:
+    src: "{{ patroni_image_tar }}"
+    dest: /root/patroni-postgres18.tar
+    mode: "0600"
+  when: image_present.rc != 0
+
+- name: Charger l'image Patroni
+  command: docker load -i /root/patroni-postgres18.tar
+  when: image_present.rc != 0
+
+- name: Supprimer le tar copié
+  file:
+    path: /root/patroni-postgres18.tar
+    state: absent

@@ -1,0 +1,112 @@
+---
+# Géré par Ansible - nœud {{ inventory_hostname }}
+scope: postgres
+namespace: /db/
+name: patroni{{ node_id }}
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: patroni{{ node_id }}:8008
+  authentication:
+    username: {{ patroni_api_user }}
+    password: "{{ patroni_api_password }}"
+
+etcd3:
+  hosts:
+    - etcd1:2379
+    - etcd2:2379
+    - etcd3:2379
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    check_timeline: true
+
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        statement_timeout: 0
+        idle_in_transaction_session_timeout: 0
+        client_connection_check_interval: 5s
+        tcp_keepalives_idle: 60
+        tcp_keepalives_interval: 30
+        tcp_keepalives_count: 10
+        archive_mode: "off"
+        archive_command: "false"
+        shared_buffers: {{ pg_shared_buffers }}
+        effective_cache_size: {{ pg_effective_cache_size }}
+        max_worker_processes: 8
+        max_parallel_workers: 8
+        max_parallel_workers_per_gather: 4
+        wal_level: replica
+        hot_standby: "on"
+        wal_keep_size: 1024MB
+
+    synchronous_mode: true
+    synchronous_node_count: 2
+
+  method: initdb
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+
+  pg_hba:
+    - local all all peer
+    - host all all 127.0.0.1/32 scram-sha-256
+    - host all all ::1/128 scram-sha-256
+    # Réseau overlay interne (réplication, pg_rewind, Patroni)
+    - host replication rep_user {{ backend_subnet }} scram-sha-256
+    - host all postgres {{ backend_subnet }} scram-sha-256
+    # Connexions HAProxy (IP des nœuds, réseau host) et passerelle docker_gwbridge
+{% for h in groups['postgres'] %}
+    - host all all {{ hostvars[h].ansible_host }}/32 scram-sha-256
+{% endfor %}
+    - host all all {{ docker_gwbridge_subnet }} scram-sha-256
+{% for ip in pg_hba_admin_scram %}
+    - host all Admin_pgsql {{ ip }}/32 scram-sha-256
+{% endfor %}
+{% for ip in pg_hba_trust %}
+    - host all all {{ ip }}/32 trust
+{% endfor %}
+
+  # Patroni >= 4.0 ne gère plus "bootstrap.users" : les comptes sont créés par post_bootstrap
+  # (commande lancée une seule fois, à l'initialisation du cluster, avec la chaîne de connexion en dernier argument).
+  post_bootstrap: >-
+    psql -v ON_ERROR_STOP=1 -c
+    "CREATE ROLE \"{{ pg_console_user }}\" LOGIN SUPERUSER CREATEROLE CREATEDB PASSWORD '{{ pg_console_password }}';
+    CREATE ROLE admin LOGIN CREATEROLE CREATEDB PASSWORD '{{ pg_admin_password }}';"
+
+postgresql:
+  listen: "*:5432"
+  connect_address: patroni{{ node_id }}:5432
+  use_unix_socket: true
+  data_dir: /var/lib/postgresql/data
+  pgpass: /tmp/pgpass
+
+  create_replica_method:
+    - basebackup
+
+  authentication:
+    replication:
+      username: rep_user
+      password: "{{ pg_replication_password }}"
+    superuser:
+      username: postgres
+      password: "{{ pg_superuser_password }}"
+
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+    logging_collector: "on"
+    log_directory: log
+    log_filename: postgresql.log
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

@@ -1,0 +1,12 @@
+---
+- name: Déployer stack patroni
+  copy:
+    src: "{{ playbook_dir }}/files/patroni-stack.yml"
+    dest: /root/patroni-stack.yml
+    mode: "0644"
+
+- name: Deploy patroni
+  command: docker stack deploy -c /root/patroni-stack.yml ptinfra
+  run_once: true  # un seul manager déploie : sinon "already exists" / "out of sequence"
+  register: patroni_deploy
+  changed_when: "'Creating' in patroni_deploy.stdout or 'Updating' in patroni_deploy.stdout"

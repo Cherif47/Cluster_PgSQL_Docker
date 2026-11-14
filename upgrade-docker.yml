@@ -1,0 +1,145 @@
+---
+# Alignement de la version Docker Engine sur tous les nœuds Swarm (rolling, 1 nœud à la fois).
+#
+# Cible : Docker CE (dépôt officiel) dans la version docker_target_version (celle de SRV-DOCK1).
+# SRV-DOCK2/3 passent de docker.io (Debian, 26.1.5) à docker-ce.
+#
+# Usage :
+#   ansible-playbook upgrade-docker.yml --check --diff          # simulation
+#   ansible-playbook upgrade-docker.yml                         # exécution
+#   ansible-playbook upgrade-docker.yml -e docker_target_version=29.9.3 --limit SRV-DOCK2
+#
+# Les 3 nœuds sont managers : serial 1 garantit que le quorum Raft (2/3) est conservé.
+# Les conteneurs/services sont redémarrés nœud par nœud (Patroni gère le failover PostgreSQL).
+
+- name: Aligner la version de Docker Engine
+  hosts: swarm
+  become: true
+  serial: 1
+  vars:
+    docker_target_version: "29.9.3"
+    docker_apt_version: "5:{{ docker_target_version }}*"
+    docker_repo_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else ansible_architecture }}"
+  environment:
+    http_proxy: "{{ http_proxy_url | default('') }}"
+    https_proxy: "{{ https_proxy_url | default('') }}"
+    no_proxy: "{{ no_proxy | default('') }}"
+
+  tasks:
+    - name: Lire la version actuelle du moteur
+      command: docker version --format '{% raw %}{{.Server.Version}}{% endraw %}'
+      register: docker_current
+      changed_when: false
+      failed_when: false
+
+    - name: Afficher l'état avant mise à jour
+      debug:
+        msg: "{{ inventory_hostname }} : {{ docker_current.stdout | default('inconnu') }} -> cible {{ docker_target_version }}"
+
+    - name: Mise à jour nécessaire uniquement si la version diffère
+      when: docker_current.stdout != docker_target_version
+      block:
+        - name: Passer le nœud en drain
+          command: docker node update --availability drain {{ inventory_hostname }}
+          changed_when: true
+          failed_when: false  # nœud sans Docker fonctionnel / pas encore dans le swarm
+
+        - name: Laisser les tâches migrer
+          pause:
+            seconds: 30
+
+        - name: Installer les prérequis du dépôt
+          apt:
+            name: [ca-certificates, curl, gnupg]
+            state: present
+            update_cache: true
+
+        - name: Créer le répertoire des clés apt
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: "0755"
+
+        - name: Télécharger la clé GPG Docker
+          get_url:
+            url: https://download.docker.com/linux/debian/gpg
+            dest: /etc/apt/keyrings/docker.asc
+            mode: "0644"
+
+        - name: Ajouter le dépôt officiel Docker
+          apt_repository:
+            repo: >-
+              deb [arch={{ docker_repo_arch }} signed-by=/etc/apt/keyrings/docker.asc]
+              https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable
+            filename: docker
+            state: present
+            update_cache: true
+
+        - name: Retirer les paquets Debian en conflit (docker.io & co)
+          apt:
+            name:
+              - docker.io
+              - docker-cli
+              - containerd
+              - runc
+              - docker-compose
+            state: absent
+          register: remove_debian_docker
+
+        - name: Installer Docker CE en version {{ docker_target_version }}
+          apt:
+            name:
+              - "docker-ce={{ docker_apt_version }}"
+              - "docker-ce-cli={{ docker_apt_version }}"
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+            allow_downgrade: true
+            update_cache: true
+          notify: Redémarrer Docker
+
+        - name: Figer la version (évite une mise à jour involontaire)
+          dpkg_selections:
+            name: "{{ item }}"
+            selection: hold
+          loop: [docker-ce, docker-ce-cli]
+
+        - name: Appliquer les handlers maintenant
+          meta: flush_handlers
+
+        - name: Docker démarré et activé
+          systemd:
+            name: docker
+            enabled: true
+            state: started
+            daemon_reload: true
+
+        - name: Attendre que le nœud soit Ready
+          command: docker node inspect self --format '{% raw %}{{.Status.State}}{% endraw %}'
+          register: node_state
+          until: node_state.stdout == 'ready'
+          retries: 30
+          delay: 5
+          changed_when: false
+
+        - name: Remettre le nœud en active
+          command: docker node update --availability active {{ inventory_hostname }}
+          changed_when: true
+
+        - name: Attendre la stabilisation des services avant le nœud suivant
+          pause:
+            seconds: 60
+
+    - name: Vérifier la version finale
+      command: docker version --format '{% raw %}{{.Server.Version}}{% endraw %}'
+      register: docker_final
+      changed_when: false
+      failed_when: docker_final.stdout != docker_target_version
+
+  handlers:
+    - name: Redémarrer Docker
+      systemd:
+        name: docker
+        state: restarted
+        daemon_reload: true

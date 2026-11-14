@@ -1,0 +1,32 @@
+---
+- name: Répertoire HAProxy
+  file:
+    path: /srv/docker/haproxy
+    state: directory
+    mode: "0755"
+
+- name: Configuration HAProxy
+  template:
+    src: haproxy.cfg.j2
+    dest: /srv/docker/haproxy/haproxy.cfg
+    mode: "0644"
+  notify: Redémarrer HAProxy
+
+- name: Valider la configuration HAProxy
+  command: >
+    docker run --rm
+    -v /srv/docker/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    {{ haproxy_image }} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+  changed_when: false
+
+- name: Conteneur HAProxy existant ?
+  command: docker ps -a --filter name=^haproxy$ --format '{{ "{{ .Names }}" }}'
+  register: haproxy_exists
+  changed_when: false
+
+- name: Créer le conteneur HAProxy
+  command: >
+    docker run -d --name haproxy --restart unless-stopped --network host
+    -v /srv/docker/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    {{ haproxy_image }}
+  when: haproxy_exists.stdout == ""

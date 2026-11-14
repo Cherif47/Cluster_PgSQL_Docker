@@ -1,0 +1,68 @@
+# Géré par Ansible - {{ inventory_hostname }}
+global
+    log stdout format raw local0
+    maxconn 2000
+
+defaults
+    mode tcp
+    log global
+    option tcplog
+    timeout connect 5s
+    timeout client 30m
+    timeout server 30m
+    timeout check 3s
+
+listen stats
+    mode http
+    bind *:{{ haproxy_stats_port }}
+    # 127.0.0.1 : sonde Keepalived
+    acl allowed_src src 127.0.0.1 {{ haproxy_allowed_sources | join(' ') }}
+    tcp-request connection reject if !allowed_src
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+
+# Écritures : uniquement le leader (Patroni répond 200 sur /primary)
+frontend pg_rw
+    bind *:{{ haproxy_pg_rw_port }}
+    acl allowed_src src 127.0.0.1 {{ haproxy_allowed_sources | join(' ') }}
+    tcp-request connection reject if !allowed_src
+    default_backend pg_primary
+
+backend pg_primary
+    option httpchk GET /primary
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+{% for h in groups['postgres'] %}
+    server patroni{{ hostvars[h].node_id }} {{ hostvars[h].ansible_host }}:5432 check port 8008
+{% endfor %}
+
+# Lectures : uniquement les réplicas (Patroni répond 200 sur /replica)
+frontend pg_ro
+    bind *:{{ haproxy_pg_ro_port }}
+    acl allowed_src src 127.0.0.1 {{ haproxy_allowed_sources | join(' ') }}
+    tcp-request connection reject if !allowed_src
+    default_backend pg_replicas
+
+backend pg_replicas
+    balance roundrobin
+    option httpchk GET /replica
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+{% for h in groups['postgres'] %}
+    server patroni{{ hostvars[h].node_id }} {{ hostvars[h].ansible_host }}:5432 check port 8008
+{% endfor %}
+
+# Entrée clients : répartition sur les PgBouncer des 3 nœuds (PgBouncer -> VIP:rw -> leader)
+frontend pgbouncer_in
+    bind *:{{ haproxy_pgbouncer_port }}
+    acl allowed_src src 127.0.0.1 {{ haproxy_allowed_sources | join(' ') }}
+    tcp-request connection reject if !allowed_src
+    default_backend pgbouncer_pool
+
+backend pgbouncer_pool
+    balance leastconn
+    default-server inter 3s fall 3 rise 2
+{% for h in groups['postgres'] %}
+    server pgbouncer{{ hostvars[h].node_id }} {{ hostvars[h].ansible_host }}:{{ pgbouncer_port }} check
+{% endfor %}

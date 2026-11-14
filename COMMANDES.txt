@@ -1,0 +1,145 @@
+===============================================================================
+ AIDE-MÉMOIRE DES COMMANDES - Swarm / etcd / Patroni / PgBouncer / HAProxy
+===============================================================================
+Nœuds : SRV-DOCK1  | SRV-DOCK2  | SRV-DOCK3 
+VIP   : 1 (ports : 6432 clients via PgBouncer, 5010 leader, 5011 réplicas, 8404 stats)
+
+Dans les commandes, patroni1 = nœud DOCK1 ; sur DOCK2/DOCK3 remplacer par patroni2/patroni3.
+Les commandes etcd s'exécutent sur n'importe quel nœud hébergeant un conteneur etcd.
+
+
+-------------------------------------------------------------------------------
+ 1. ANSIBLE (depuis WSL : cd /home/deploy/ansible/Scripts/DOCKER)
+-------------------------------------------------------------------------------
+ansible swarm -m ping                          Teste la connexion SSH aux 3 nœuds
+ansible-playbook playbook.yml --syntax-check   Vérifie la syntaxe du playbook
+ansible-playbook playbook.yml                  Déploiement complet (rejouable)
+ansible-playbook playbook.yml --tags/--limit   (--limit SRV-DOCK2 : un seul nœud)
+ansible-playbook upgrade-docker.yml --check --diff   Simule la mise à jour de Docker
+ansible-playbook upgrade-docker.yml --limit SRV-DOCK2   Met à jour un nœud (test)
+ansible-playbook upgrade-docker.yml            Aligne Docker CE sur tous les nœuds (1 par 1)
+
+
+-------------------------------------------------------------------------------
+ 2. DOCKER / SWARM
+-------------------------------------------------------------------------------
+docker version --format '{{.Server.Version}}'  Version du moteur Docker
+docker node ls                                 État des nœuds Swarm (Ready/Active, Leader)
+docker node update --availability drain <nœud>   Vide un nœud (maintenance)
+docker node update --availability active <nœud>  Remet un nœud en service
+docker stack ls                                Liste des stacks déployées
+docker stack services pginfra                  Services etcd (1/1 attendu)
+docker stack services ptinfra                  Services Patroni (1/1 attendu)
+docker service ps ptinfra_patroni1 --no-trunc  Historique et erreurs d'un service
+docker service logs -f --tail 100 <service>    Logs d'un service (ex. ptinfra_patroni1)
+docker service update --force <service>        Redémarre un service (un à la fois)
+docker stack deploy -c /root/patroni-stack.yml ptinfra   Redéploie la stack Patroni
+docker stack rm ptinfra                        Supprime une stack
+docker ps / docker ps -a                       Conteneurs en cours / tous
+docker logs --tail 50 <conteneur>              Logs d'un conteneur (haproxy, keepalived, pgbouncer)
+docker exec -it <conteneur> <cmd>              Commande dans un conteneur
+docker image ls                                Images présentes sur le nœud
+docker load -i patroni-postgres18.tar          Charge l'image Patroni depuis le tar
+docker build --build-arg HTTP_PROXY=... --build-arg HTTPS_PROXY=... -t patroni-postgres:18 .
+                                               Reconstruit l'image Patroni (Dockerfile)
+docker save patroni-postgres:18 -o patroni-postgres18.tar   Exporte l'image en tar
+apt-cache madison docker-ce                    Versions de Docker CE disponibles
+apt-mark showhold                              Paquets figés (docker-ce, docker-ce-cli)
+
+
+-------------------------------------------------------------------------------
+ 3. etcd
+-------------------------------------------------------------------------------
+docker exec $(docker ps -q -f name=pginfra_etcd | head -n1) etcdctl --endpoints=http://etcd1:2379 endpoint health --cluster                   Santé des 3 membres
+docker exec $(docker ps -q -f name=pginfra_etcd | head -n1) etcdctl --endpoints=http://etcd1:2379 endpoint status --cluster -w table          Leader, version, taille de la base
+docker exec $(docker ps -q -f name=pginfra_etcd | head -n1) etcdctl --endpoints=http://etcd1:2379 member list -w table                        Liste des membres
+docker exec $(docker ps -q -f name=pginfra_etcd | head -n1) etcdctl --endpoints=http://etcd1:2379 get /db --prefix --keys-only                Clés Patroni (namespace /db/)
+docker exec $(docker ps -q -f name=pginfra_etcd | head -n1) etcdctl --endpoints=http://etcd1:2379 alarm list                                  Alarmes (ex. base pleine)
+docker exec $(docker ps -q -f name=pginfra_etcd | head -n1) etcdctl --endpoints=http://etcd1:2379 defrag --cluster                            Défragmente (libère l'espace)
+docker exec $(docker ps -q -f name=pginfra_etcd | head -n1) etcdctl --endpoints=http://etcd1:2379 snapshot save /tmp/etcd.db                  Sauvegarde (puis docker cp vers l'hôte)
+docker service logs -f --tail 100 pginfra_etcd1   Logs d'un membre
+docker service update --force pginfra_etcd2    Redémarre un membre (jamais 2 à la fois)
+ATTENTION : 2 membres sur 3 arrêtés = perte du quorum, PostgreSQL passe en lecture seule.
+
+
+-------------------------------------------------------------------------------
+ 4. PATRONI (alias docker exec $(docker ps -q -f name=ptinfra_patroni1) ; config : /etc/patroni/patroni.yml)
+-------------------------------------------------------------------------------
+docker exec $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml list           État du cluster (1 Leader + 2 Sync Standby)
+docker exec $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml show-config    Configuration dynamique (stockée dans etcd)
+docker exec -it $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml edit-config
+                                               Édite la config (nécessite vi dans l'image)
+docker exec $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml edit-config --force -s postgresql.parameters.max_connections=300
+                                               Modifie un paramètre sans éditeur
+docker exec -i $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml edit-config --apply - --force < fichier.yml
+                                               Applique un fichier YAML (fusionné)
+docker exec $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml restart postgres <membre>   Redémarre PostgreSQL (si "Pending restart")
+docker exec $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml reload postgres <membre>    Recharge la configuration
+docker exec $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml switchover     Bascule planifiée du leader
+docker exec $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml failover       Bascule forcée (leader indisponible)
+docker exec $(docker ps -q -f name=ptinfra_patroni1) patronictl -c /etc/patroni/patroni.yml reinit postgres <membre>    Reconstruit un réplica (basebackup)
+curl http://<ip nœud>:8008/primary             200 si le nœud est leader
+curl http://<ip nœud>:8008/replica             200 si le nœud est réplica
+curl http://<ip nœud>:8008/cluster             État du cluster en JSON
+
+
+-------------------------------------------------------------------------------
+ 5. POSTGRESQL
+-------------------------------------------------------------------------------
+docker exec -it $(docker ps -q -f name=ptinfra_patroni1) psql -U postgres                            Console SQL locale (dans le conteneur)
+\du                                            Liste des rôles
+\l                                             Liste des bases
+select pg_is_in_recovery();                    f = leader, t = réplica
+select * from pg_stat_replication;             État de la réplication (sur le leader)
+select * from pg_stat_activity;                Connexions en cours
+show max_connections;                          Valeur d'un paramètre
+
+Créer les comptes (le bootstrap Patroni ne rejoue pas sur un cluster existant) :
+  CREATE ROLE "Admin_pgsql" LOGIN SUPERUSER CREATEROLE CREATEDB PASSWORD '...';
+  CREATE ROLE admin LOGIN CREATEROLE CREATEDB PASSWORD '...';
+  (même mot de passe que pgbouncer_users dans group_vars/all/vars.yml)
+
+
+-------------------------------------------------------------------------------
+ 6. HAPROXY + KEEPALIVED (nœuds DOCK1 et DOCK2)
+-------------------------------------------------------------------------------
+ip -4 addr show | grep IP           Quel nœud porte la VIP
+docker logs keepalived --tail 20               État MASTER/BACKUP
+docker logs haproxy --tail 50                  Logs HAProxy
+docker restart haproxy                         Redémarre HAProxy
+docker run --rm -v /srv/docker/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro haproxy:3.0-alpine haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+                                               Valide la configuration HAProxy
+http://10.38.16.160:8404/stats                 Page de stats (état des serveurs)
+psql -h IP -p 5010 -U postgres -c "select pg_is_in_recovery();"   Test leader direct (f)
+psql -h IPV -p 5011 -U postgres -c "select pg_is_in_recovery();"   Test réplica direct (t)
+
+
+-------------------------------------------------------------------------------
+ 7. PGBOUNCER (3 nœuds, port local 6433, entrée clients VIP:6432)
+-------------------------------------------------------------------------------
+docker logs pgbouncer --tail 50                Logs PgBouncer
+docker restart pgbouncer                       Redémarre (après modif pgbouncer.ini / userlist.txt)
+psql -h IPV -p 6432 -U <pg_console_user> postgres -c "select pg_is_in_recovery();"
+                                               Test de la chaîne complète (f attendu)
+psql -h IPV -p 6432 -U <pg_console_user> pgbouncer      Console d'admin PgBouncer
+  SHOW POOLS;      Pools et connexions actives/en attente
+  SHOW CLIENTS;    Clients connectés
+  SHOW SERVERS;    Connexions vers PostgreSQL
+  SHOW STATS;      Statistiques (requêtes, trafic)
+  RELOAD;          Recharge pgbouncer.ini sans couper
+Fichiers : /srv/docker/pgbouncer/pgbouncer.ini et userlist.txt
+
+
+-------------------------------------------------------------------------------
+ 8. SYSTÈME / RÉSEAU / DÉPANNAGE
+-------------------------------------------------------------------------------
+systemctl show docker --property=Environment   Proxy vu par le démon Docker
+systemctl status docker / journalctl -u docker -n 50    État et logs du démon
+ss -tlnp | grep -E '5432|5010|5011|6432|6433|8008|8404'   Ports en écoute
+apt-cache policy docker-ce docker.io           Origine de l'installation Docker
+ls /srv/docker                                 Données (etcdN, postgresN, haproxy, pgbouncer...)
+Ports Swarm à ouvrir entre nœuds : 2377/tcp, 7946/tcp+udp, 4789/udp ; VRRP (protocole 112)
+
+Rejouer après un essai raté :
+  docker stack rm ptinfra pginfra ; vider /srv/docker/etcdN et /srv/docker/postgresN ;
+  ansible-playbook playbook.yml

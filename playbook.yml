@@ -1,0 +1,65 @@
+---
+- name: Pré-requis Ansible (python3) sur instances vierges
+  hosts: swarm
+  gather_facts: false
+  roles:
+    - bootstrap
+
+- name: Installation Docker
+  hosts: swarm
+  become: true
+  roles:
+    - docker
+
+- name: Initialisation du Swarm (premier manager)
+  hosts: manager[0]
+  become: true
+  roles:
+    - swarm-manager
+
+- name: Join des autres managers
+  hosts: manager:!manager[0]
+  become: true
+  roles:
+    - swarm-join-manager
+
+- name: Préparation des nœuds (répertoires, config Patroni, image)
+  hosts: swarm
+  become: true
+  roles:
+    - node_prepare
+
+- name: Déploiement PostgreSQL HA et Portainer
+  hosts: manager
+  become: true
+  pre_tasks:
+    - name: Attendre que tous les nœuds soient Ready
+      command: docker node ls --format '{{ "{{ .Status }}" }}'
+      register: node_status
+      until: node_status.stdout_lines | select('equalto', 'Ready') | list | length == groups['swarm'] | length
+      retries: 20
+      delay: 5
+      changed_when: false
+  roles:
+    - etcd
+    - patroni
+    - portainer
+
+- name: Déploiement PgBouncer (3 nœuds)
+  hosts: swarm
+  become: true
+  roles:
+    - pgbouncer
+
+- name: Déploiement HAProxy + Keepalived (VIP)
+  hosts: lb
+  become: true
+  pre_tasks:
+    - name: La VIP doit être renseignée (keepalived_vip dans group_vars/all/vars.yml)
+      assert:
+        that: keepalived_vip | length > 0
+        fail_msg: "keepalived_vip est vide : renseignez l'adresse de la VIP."
+      run_once: true
+  roles:
+    - haproxy
+    - keepalived

@@ -1,0 +1,35 @@
+---
+# PgBouncer sur chacun des 3 nœuds (réseau host). Il se connecte au leader via la VIP HAProxy (port rw).
+- name: Répertoire PgBouncer
+  file:
+    path: /srv/docker/pgbouncer
+    state: directory
+    mode: "0755"
+
+- name: Configuration PgBouncer
+  template:
+    src: pgbouncer.ini.j2
+    dest: /srv/docker/pgbouncer/pgbouncer.ini
+    mode: "0644"
+  notify: Redémarrer PgBouncer
+
+- name: Fichier des utilisateurs PgBouncer
+  template:
+    src: userlist.txt.j2
+    dest: /srv/docker/pgbouncer/userlist.txt
+    mode: "0644"   # lisible par l'utilisateur du conteneur ; /srv/docker ne doit pas être exposé
+  no_log: true
+  notify: Redémarrer PgBouncer
+
+- name: Conteneur PgBouncer existant ?
+  command: docker ps -a --filter name=^pgbouncer$ --format '{{ "{{ .Names }}" }}'
+  register: pgbouncer_exists
+  changed_when: false
+
+- name: Créer le conteneur PgBouncer
+  command: >
+    docker run -d --name pgbouncer --restart unless-stopped --network host
+    -v /srv/docker/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+    -v /srv/docker/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    {{ pgbouncer_image }} pgbouncer /etc/pgbouncer/pgbouncer.ini
+  when: pgbouncer_exists.stdout == ""

@@ -1,0 +1,19 @@
+---
+# Exécuté uniquement sur le premier manager (initialisation du swarm).
+- name: État du Swarm
+  command: docker info --format '{{ "{{ .Swarm.LocalNodeState }}" }}'
+  register: swarm_state
+  changed_when: false
+
+- name: Init swarm
+  command: docker swarm init --advertise-addr {{ ansible_host }}
+  when: swarm_state.stdout != "active"
+
+- name: Récupérer le token manager
+  command: docker swarm join-token -q manager
+  register: manager_token
+  changed_when: false
+
+- name: Enregistrer le token
+  set_fact:
+    swarm_manager_token: "{{ manager_token.stdout }}"

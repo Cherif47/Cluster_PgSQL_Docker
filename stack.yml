@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+
+  nginx:
+    image: nginx:stable-trixie-perl
+
+    networks:
+      - frontend
+
+    deploy:
+      replicas: 3
+
+networks:
+
+  frontend:
+    external: true

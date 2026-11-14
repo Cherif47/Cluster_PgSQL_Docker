@@ -1,0 +1,77 @@
+---
+# DESTRUCTIF : supprime toutes les stacks, tous les conteneurs, quitte le Swarm
+# et efface les données etcd / PostgreSQL / HAProxy. À lancer avant un redéploiement complet.
+#   ansible-playbook cleanup.yml
+# Ensuite : ansible-playbook playbook.yml
+
+- name: Confirmation
+  hosts: localhost
+  gather_facts: false
+  vars_prompt:
+    - name: confirm
+      prompt: "Tout supprimer (stacks, conteneurs, swarm, données etcd/postgres) ? Tapez OUI"
+      private: false
+  tasks:
+    - name: Abandon si non confirmé
+      assert:
+        that: confirm == "OUI"
+        fail_msg: "Abandon."
+
+- name: Supprimer les stacks
+  hosts: manager[0]
+  become: true
+  tasks:
+    - name: Lister les stacks
+      command: docker stack ls --format '{{ "{{ .Name }}" }}'
+      register: stacks
+      changed_when: false
+      failed_when: false
+
+    - name: Supprimer chaque stack
+      command: docker stack rm {{ item }}
+      loop: "{{ stacks.stdout_lines }}"
+      failed_when: false
+
+    - name: Supprimer les services restants (hors stack)
+      shell: docker service ls -q | xargs -r docker service rm
+      failed_when: false
+
+    - name: Laisser le temps aux tâches de s'arrêter
+      pause:
+        seconds: 20
+
+- name: Nettoyer chaque nœud
+  hosts: swarm
+  become: true
+  tasks:
+    - name: Supprimer tous les conteneurs (y compris haproxy, keepalived)
+      shell: docker ps -aq | xargs -r docker rm -f
+      failed_when: false
+
+    - name: Quitter le swarm
+      command: docker swarm leave --force
+      failed_when: false
+
+    - name: Supprimer le volume portainer_data
+      command: docker volume rm -f portainer_data
+      failed_when: false
+
+    - name: Supprimer les données etcd, PostgreSQL et configs générées
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /srv/docker/etcd1
+        - /srv/docker/etcd2
+        - /srv/docker/etcd3
+        - /srv/docker/postgres1
+        - /srv/docker/postgres2
+        - /srv/docker/postgres3
+        - /srv/docker/patroni1.yml
+        - /srv/docker/patroni2.yml
+        - /srv/docker/patroni3.yml
+        - /srv/docker/haproxy
+
+    - name: Supprimer les réseaux inutilisés
+      command: docker network prune -f
+      failed_when: false

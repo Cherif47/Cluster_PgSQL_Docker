@@ -1,0 +1,4 @@
+---
+- name: Redémarrer Keepalived
+  command: docker restart keepalived
+  failed_when: false

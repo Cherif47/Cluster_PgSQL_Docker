@@ -1,0 +1,5 @@
+---
+# Instance vierge : Ansible a besoin de python3 sur la cible avant tout module.
+- name: Installer python3 si absent
+  raw: test -x /usr/bin/python3 || (apt-get update && apt-get install -y python3)
+  changed_when: false

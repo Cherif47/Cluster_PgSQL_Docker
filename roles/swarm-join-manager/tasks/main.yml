@@ -1,0 +1,40 @@
+---
+# Exécuté sur les managers autres que le premier.
+- name: Vérification Swarm (état et adresse annoncée)
+  command: docker info --format '{{ "{{ .Swarm.LocalNodeState }}|{{ .Swarm.NodeAddr }}" }}'
+  register: swarm_info
+  changed_when: false
+
+- name: Analyse de l'état Swarm
+  set_fact:
+    swarm_state: "{{ swarm_info.stdout.split('|')[0] }}"
+    swarm_addr: "{{ swarm_info.stdout.split('|')[1] | default('') }}"
+
+# Changement d'IP d'un nœud déjà membre : l'adresse Raft enregistrée est périmée, il faut le retirer puis le rejoindre.
+- name: Nœud membre avec une ancienne adresse (ou état incohérent) ?
+  set_fact:
+    swarm_rejoin: "{{ swarm_state != 'inactive' and (swarm_state != 'active' or swarm_addr != ansible_host) }}"
+
+- name: Rétrograder le nœud depuis le premier manager
+  command: docker node demote {{ inventory_hostname }}
+  delegate_to: "{{ groups['manager'][0] }}"
+  failed_when: false
+  when: swarm_rejoin | bool
+
+- name: Quitter le Swarm (ancienne adresse)
+  command: docker swarm leave --force
+  when: swarm_rejoin | bool
+
+- name: Retirer l'ancien nœud de la liste du Swarm
+  command: docker node rm --force {{ inventory_hostname }}
+  delegate_to: "{{ groups['manager'][0] }}"
+  failed_when: false
+  when: swarm_rejoin | bool
+
+- name: Join Swarm en tant que manager
+  command: >
+    docker swarm join
+    --token {{ hostvars[groups['manager'][0]].swarm_manager_token }}
+    --advertise-addr {{ ansible_host }}
+    {{ hostvars[groups['manager'][0]].ansible_host }}:2377
+  when: swarm_state == 'inactive' or (swarm_rejoin | bool)

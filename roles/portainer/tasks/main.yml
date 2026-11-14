@@ -1,0 +1,28 @@
+---
+- name: Volume portainer_data
+  shell: |
+    docker volume inspect portainer_data >/dev/null 2>&1 && exit 0
+    docker volume create portainer_data && echo CREATED
+  register: vol
+  changed_when: "'CREATED' in vol.stdout"
+
+- name: Copier les stacks Portainer
+  copy:
+    src: "{{ playbook_dir }}/files/{{ item }}"
+    dest: "/root/{{ item }}"
+    mode: "0644"
+  loop:
+    - portainer-agent.yml
+    - portainer-stack.yml
+
+- name: Deploy Portainer Agent
+  command: docker stack deploy -c /root/portainer-agent.yml portainer-agent
+  run_once: true
+  register: agent_deploy
+  changed_when: "'Creating' in agent_deploy.stdout or 'Updating' in agent_deploy.stdout"
+
+- name: Deploy Portainer
+  command: docker stack deploy -c /root/portainer-stack.yml portainer
+  run_once: true
+  register: portainer_deploy
+  changed_when: "'Creating' in portainer_deploy.stdout or 'Updating' in portainer_deploy.stdout"

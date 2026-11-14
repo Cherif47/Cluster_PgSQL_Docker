@@ -1,0 +1,69 @@
+---
+# Proxy(laisser vides si accès direct à Internet).
+http_proxy_url: ""
+https_proxy_url: ""
+no_proxy: "localhost,127.0.0.1,10.38.0.0/16"
+
+# --- HAProxy + Keepalived (conteneurs en réseau host sur chaque nœud) ---
+# VIP portée par le nœud MASTER Keepalived. À RENSEIGNER (même sous-réseau que les nœuds).
+keepalived_vip: ""
+keepalived_vip_prefix: 24
+# Interface portant la VIP (par défaut : interface de la route par défaut)
+keepalived_interface: "{{ ansible_default_ipv4.interface }}"
+keepalived_router_id: 51
+keepalived_auth_pass: "pgVIP001"   # 8 caractères maximum
+keepalived_image: "keepalived:local"
+
+# Compte de la console d'administration (pgAdmin, DBeaver...), créé comme superuser au bootstrap Patroni
+pg_console_user: ""
+pg_console_password: ""   # à passer en ansible-vault
+
+# Postes autorisés à joindre la VIP (ports PostgreSQL et stats). HAProxy filtre par IP source,
+# car PostgreSQL ne voit plus que l'IP du nœud HAProxy. Par défaut : admins + postes de confiance.
+haproxy_allowed_sources: "{{ (pg_hba_admin_scram + pg_hba_trust + (groups['swarm'] | map('extract', hostvars, 'ansible_host') | list) + [keepalived_vip]) | unique }}"
+
+haproxy_image: "haproxy:3.0-alpine"
+haproxy_pg_rw_port: 5010      # écritures -> leader Patroni
+haproxy_pg_ro_port: 5011      # lectures -> réplicas Patroni
+haproxy_stats_port: 8404      # page de stats + sonde Keepalived
+haproxy_pgbouncer_port: 6432  # port d'entrée des clients : HAProxy répartit sur les PgBouncer des 3 nœuds
+
+# --- PgBouncer (conteneur sur chacun des 3 nœuds, réseau host) ---
+pgbouncer_image: "edoburu/pgbouncer:latest"   # à figer sur un tag précis une fois validé
+pgbouncer_port: 6433                          # port local PgBouncer (6432 est pris par HAProxy sur les nœuds lb)
+pgbouncer_pool_mode: transaction
+pgbouncer_max_client_conn: 1000
+pgbouncer_default_pool_size: 20
+# Comptes autorisés à se connecter via PgBouncer (mot de passe en clair, scram-sha-256 côté client)
+pgbouncer_users:
+  - { name: "{{ pg_console_user }}", password: "{{ pg_console_password }}" }
+
+# API REST Patroni : les requêtes de modification (failover, restart...) exigent ce compte
+patroni_api_user: ""
+patroni_api_password: ""
+
+# Plage docker_gwbridge (source vue par PostgreSQL pour les connexions HAProxy locales)
+docker_gwbridge_subnet: """
+
+# Réseau overlay partagé par etcd et patroni
+backend_network: backend
+backend_subnet: ""
+
+# Image Patroni (chargée depuis le tar, pas de registre)
+patroni_image: "patroni-postgres:18"
+patroni_image_tar: "{{ playbook_dir }}/patroni-postgres18.tar"
+
+# Réglages PostgreSQL (à adapter à la RAM des nœuds)
+pg_shared_buffers: "4GB"
+pg_effective_cache_size: "12GB"
+
+# Identifiants : à déplacer dans un fichier chiffré (ansible-vault) pour la production
+pg_superuser_password: ""
+pg_replication_password: ""
+pg_admin_password: ""
+
+# Postes autorisés à se connecter 
+pg_hba_admin_scram:
+
+pg_hba_trust:
+

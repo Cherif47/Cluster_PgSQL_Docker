@@ -1,0 +1,4 @@
+---
+- name: Redémarrer PgBouncer
+  command: docker restart pgbouncer
+  failed_when: false  # conteneur pas encore créé au premier passage
