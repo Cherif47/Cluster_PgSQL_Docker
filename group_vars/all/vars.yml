@@ -11,7 +11,7 @@ keepalived_vip_prefix: 24
 # Interface portant la VIP (par défaut : interface de la route par défaut)
 keepalived_interface: "{{ ansible_default_ipv4.interface }}"
 keepalived_router_id: 51
-keepalived_auth_pass: "pgVIP001"   # 8 caractères maximum
+keepalived_auth_pass: ""   # 8 caractères maximum
 keepalived_image: "keepalived:local"
 
 # Compte de la console d'administration (pgAdmin, DBeaver...), créé comme superuser au bootstrap Patroni
